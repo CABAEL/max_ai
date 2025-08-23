@@ -1,0 +1,17 @@
+{
+  "wakeWords": [
+    "hey max",
+    "wake up max",
+    "max",
+    "hello max",
+    "hi max",
+    "yo max",
+    "max wake up",
+    "listen max",
+    "attention max"
+  ],
+  "exactMatches": [
+    "max"
+  ],
+  "description": "Wake words for Max AI assistant. 'wakeWords' are matched as substrings, 'exactMatches' are matched as standalone words or with proper spacing."
+}
