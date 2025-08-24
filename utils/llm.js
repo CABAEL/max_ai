@@ -5,10 +5,11 @@ import { processWithFunctions } from './function-processor.js';
  * Send a message to LM Studio local server with conversation history
  * @param {string} message - The user's message
  * @param {Array} conversationHistory - Array of previous messages
- * @param {string} baseUrl - LM Studio server URL (default: http://localhost:1234)
+ * @param {Object} options - Options including baseUrl and signal for abortion
  * @returns {Promise<string>} - AI response
  */
-export async function sendToLMStudio(message, conversationHistory = [], baseUrl = 'http://127.0.0.1:1234') {
+export async function sendToLMStudio(message, conversationHistory = [], options = {}) {
+  const { baseUrl = 'http://127.0.0.1:1234', signal } = options;
   try {
     // Process message with functions to get real-time data
     const enhancedMessage = await processWithFunctions(message);
@@ -56,7 +57,8 @@ export async function sendToLMStudio(message, conversationHistory = [], baseUrl 
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
+      signal: signal // Support for AbortController
     });
 
     if (!response.ok) {
@@ -75,6 +77,11 @@ export async function sendToLMStudio(message, conversationHistory = [], baseUrl 
       return "I received an unexpected response format.";
     }
   } catch (error) {
+    // If the request was aborted, re-throw the error to be handled upstream
+    if (error.name === 'AbortError') {
+      throw error;
+    }
+    
     console.error('Error connecting to LM Studio:', error.message);
     return "Sorry, I'm having trouble connecting to my brain right now.";
   }

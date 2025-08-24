@@ -43,11 +43,32 @@ export async function processSystemCommands(message) {
     systemResults.push(result);
   }
 
-  // Check for run program commands
-  if (lowerMessage.includes('run ') || lowerMessage.includes('execute ') ||
-    lowerMessage.includes('start ') || lowerMessage.includes('launch ') ||
-    lowerMessage.includes('open ')) {
-    const commandMatch = message.match(/(?:run|execute|start|launch|open)\s+(.+)/i);
+  // Check for open application commands (specific apps)
+  if (lowerMessage.includes('open ') || lowerMessage.includes('launch ') ||
+    lowerMessage.includes('start ')) {
+    const appMatch = message.match(/(?:open|launch|start)\s+(.+)/i);
+    if (appMatch) {
+      const appName = appMatch[1].trim();
+      
+      // Check if it's a common application
+      const commonApps = ['notepad', 'calculator', 'paint', 'chrome', 'firefox', 'edge', 
+                         'explorer', 'cmd', 'powershell', 'task manager', 'control panel', 
+                         'settings', 'word', 'excel', 'powerpoint', 'outlook', 'visual studio code', 'vscode'];
+      
+      if (commonApps.some(app => appName.toLowerCase().includes(app))) {
+        const result = await systemActions.openApplication.function(appName, getUserConfirmation);
+        systemResults.push(result);
+      } else {
+        // Treat as general command
+        const result = await systemActions.runProgram.function(appName, getUserConfirmation);
+        systemResults.push(result);
+      }
+    }
+  }
+
+  // Check for run program commands (general commands)
+  if (lowerMessage.includes('run ') || lowerMessage.includes('execute ')) {
+    const commandMatch = message.match(/(?:run|execute)\s+(.+)/i);
     if (commandMatch) {
       const command = commandMatch[1].trim();
       const result = await systemActions.runProgram.function(command, getUserConfirmation);
@@ -64,6 +85,48 @@ export async function processSystemCommands(message) {
       const result = await systemActions.terminateProcess.function(processId, getUserConfirmation);
       systemResults.push(result);
     }
+  }
+
+  // Check for shutdown commands
+  if (lowerMessage.includes('shutdown') || lowerMessage.includes('shut down') ||
+    lowerMessage.includes('turn off') || lowerMessage.includes('power off')) {
+    const result = await systemActions.shutdownComputer.function(getAdminConfirmation);
+    systemResults.push(result);
+  }
+
+  // Check for restart commands
+  if (lowerMessage.includes('restart') || lowerMessage.includes('reboot') ||
+    lowerMessage.includes('reset computer') || lowerMessage.includes('restart pc')) {
+    const result = await systemActions.restartComputer.function(getAdminConfirmation);
+    systemResults.push(result);
+  }
+
+  // Check for admin commands
+  if (lowerMessage.includes('run as admin') || lowerMessage.includes('administrator') ||
+    lowerMessage.includes('elevated') || lowerMessage.includes('admin rights')) {
+    const commandMatch = message.match(/(?:run as admin|administrator|elevated|admin rights)\s+(.+)/i);
+    if (commandMatch) {
+      const command = commandMatch[1].trim();
+      const result = await systemActions.runAsAdmin.function(command, getAdminConfirmation);
+      systemResults.push(result);
+    }
+  }
+
+  // Check for lock computer commands
+  if (lowerMessage.includes('lock computer') || lowerMessage.includes('lock pc') ||
+    lowerMessage.includes('lock screen') || lowerMessage.includes('lock workstation')) {
+    const result = await systemActions.lockComputer.function();
+    systemResults.push(result);
+  }
+
+
+
+  // Check for unlock commands
+  if (lowerMessage.includes('unlock pc') || lowerMessage.includes('unlock computer') ||
+      lowerMessage.includes('unlock') || lowerMessage.includes('open computer')) {
+    // Direct unlock with PIN
+    const result = await systemActions.unlockComputer.function();
+    systemResults.push(result);
   }
 
   // Check for mouse position commands
@@ -233,6 +296,75 @@ async function getUserConfirmation(action = 'perform this action') {
 }
 
 /**
+ * Get admin confirmation for critical operations (shutdown, restart, admin commands)
+ * @param {string} action - Description of the action to confirm
+ * @returns {Promise<boolean>} User confirmation
+ */
+async function getAdminConfirmation(action = 'perform this critical action') {
+  try {
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (attempts < maxAttempts) {
+      // Record user response
+      const filePath = await recordChunk('audio/admin-confirmation.wav', 5000); // 5s for critical confirmation
+      const response = await transcribe(filePath);
+
+      if (response.trim()) {
+        console.log(`🎤 You said: "${response.trim()}"`);
+
+        const lowerResponse = response.toLowerCase();
+
+        // For shutdown - require specific confirmation
+        if (action.includes('shutdown')) {
+          if (lowerResponse.includes('yes shutdown') || lowerResponse.includes('confirm shutdown')) {
+            console.log('✅ Shutdown confirmed by user');
+            return true;
+          }
+        }
+        
+        // For restart - require specific confirmation
+        if (action.includes('restart')) {
+          if (lowerResponse.includes('yes restart') || lowerResponse.includes('confirm restart')) {
+            console.log('✅ Restart confirmed by user');
+            return true;
+          }
+        }
+        
+        // For admin commands - require specific confirmation
+        if (action.includes('admin')) {
+          if (lowerResponse.includes('yes admin') || lowerResponse.includes('confirm admin')) {
+            console.log('✅ Admin command confirmed by user');
+            return true;
+          }
+        }
+
+        // Check for negative confirmation
+        if (lowerResponse.includes('no') || lowerResponse.includes('cancel') ||
+          lowerResponse.includes('abort') || lowerResponse.includes('stop') ||
+          lowerResponse.includes('don\'t') || lowerResponse.includes('never mind')) {
+          console.log('❌ Cancelled by user');
+          return false;
+        }
+
+        // Unclear response for critical actions
+        console.log('❓ For critical actions, please be specific. Say the exact confirmation phrase.');
+        attempts++;
+      } else {
+        console.log('❓ No response heard. Please provide clear confirmation.');
+        attempts++;
+      }
+    }
+
+    console.log('⏰ No clear confirmation received. Cancelling critical operation for safety.');
+    return false;
+  } catch (error) {
+    console.error('Error getting admin confirmation:', error);
+    return false;
+  }
+}
+
+/**
  * Check if message contains system commands
  * @param {string} message - User's message
  * @returns {boolean} True if system commands detected
@@ -248,7 +380,12 @@ export function containsSystemCommands(message) {
     'mouse position', 'cursor position', 'mouse location',
     'screen resolution', 'screen size', 'display resolution',
     'move mouse', 'move cursor', 'click', 'mouse click',
-    'scroll', 'type ', 'write ', 'press ', 'send keys', 'keyboard shortcut'
+    'scroll', 'type ', 'write ', 'press ', 'send keys', 'keyboard shortcut',
+    'shutdown', 'shut down', 'turn off', 'power off',
+    'restart', 'reboot', 'reset computer',
+    'run as admin', 'administrator', 'elevated', 'admin rights',
+    'lock computer', 'lock pc', 'lock screen', 'lock workstation',
+    'unlock', 'unlock pc', 'unlock computer', 'open computer'
   ];
 
   const lowerMessage = message.toLowerCase();

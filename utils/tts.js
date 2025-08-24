@@ -6,6 +6,21 @@ import { transcribe } from './stt.js';
 
 let currentSpeechProcess = null;
 
+/**
+ * Check if text contains stop words for interruption
+ * @param {string} text - Text to check
+ * @returns {boolean} - True if contains stop words
+ */
+function containsStopWords(text) {
+  const stopWords = [
+    'stop', 'halt', 'cancel', 'abort', 'quit', 'enough', 'nevermind',
+    'never mind', 'forget it', 'skip', 'pause', 'wait'
+  ];
+
+  const lowerText = text.toLowerCase();
+  return stopWords.some(word => lowerText.includes(word));
+}
+
 // Configuration for pyttsx3 TTS
 const PYTTSX3_CONFIG = {
   rate: 180,        // Speech rate (words per minute)
@@ -119,6 +134,9 @@ if __name__ == "__main__":
 
         if (code === 0) {
           resolve({ completed: true, interrupted: wasInterrupted });
+        } else if (wasInterrupted) {
+          // If interrupted, don't treat as error
+          resolve({ completed: false, interrupted: true });
         } else {
           reject(new Error(`pyttsx3 TTS failed with code ${code}`));
         }
@@ -205,6 +223,9 @@ async function speakWithSAPI(text, outputPath = null, interruptible = true) {
 
         if (code === 0) {
           resolve({ completed: true, interrupted: wasInterrupted });
+        } else if (wasInterrupted) {
+          // If interrupted, don't treat as error
+          resolve({ completed: false, interrupted: true });
         } else {
           reject(new Error(`PowerShell TTS failed with code ${code}`));
         }
@@ -273,13 +294,14 @@ function startInterruptMonitoring() {
         const filePath = await recordChunk('audio/interrupt.wav', 1000); // 1s chunks
         const text = await transcribe(filePath);
 
-        // Check if user is speaking (any clear speech interrupts)
+        // Check if user said a stop command (only stop words interrupt)
         if (text.trim() &&
           !text.includes('[BLANK_AUDIO]') &&
           !text.includes('[inaudible]') &&
-          text.length > 2) { // Ignore very short noise
+          text.length > 2 &&
+          containsStopWords(text)) { // Only interrupt on stop commands
 
-          console.log(`🎤 Interrupt detected: "${text.trim()}"`);
+          console.log(`🛑 Stop command detected: "${text.trim()}"`);
 
           // Clean up interrupt detection file
           try {
@@ -315,6 +337,34 @@ function startInterruptMonitoring() {
   })();
 
   return monitor;
+}
+
+/**
+ * Interrupt current speech immediately
+ * @returns {boolean} - True if speech was interrupted, false if no speech was active
+ */
+export function interruptSpeech() {
+  if (currentSpeechProcess) {
+    console.log('🛑 Interrupting current speech...');
+    try {
+      currentSpeechProcess.kill('SIGTERM');
+      currentSpeechProcess = null;
+      return true;
+    } catch (error) {
+      console.error('Error interrupting speech:', error.message);
+      currentSpeechProcess = null;
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Check if speech is currently active
+ * @returns {boolean} - True if speech is active
+ */
+export function isSpeechActive() {
+  return currentSpeechProcess !== null;
 }
 
 /**

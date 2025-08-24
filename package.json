@@ -5,6 +5,8 @@
   "description": "A AI ASSISTANT",
   "main": "index.js",
   "scripts": {
+    "start": "node main.js",
+    "stream": "node main-streaming.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

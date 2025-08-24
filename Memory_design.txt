@@ -1,0 +1,288 @@
+# Max AI — Long‑Term Memory Reference Database: Complete Queries Document
+
+This document consolidates all DDL statements, indexes, and example queries for setting up the **Max AI long-term memory** system with PostgreSQL + pgvector, including voice recognition fields.
+
+---
+
+## 1. Enable Extensions
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+```
+
+---
+
+## 2. Tenancy / Namespaces
+```sql
+CREATE TABLE tenants (
+  id            BIGSERIAL PRIMARY KEY,
+  name          TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE namespaces (
+  id            BIGSERIAL PRIMARY KEY,
+  tenant_id     BIGINT REFERENCES tenants(id) ON DELETE CASCADE,
+  code          TEXT NOT NULL,
+  description   TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (tenant_id, code)
+);
+```
+
+---
+
+## 3. Users, Sessions, Interactions
+```sql
+CREATE TABLE users (
+  id            BIGSERIAL PRIMARY KEY,
+  namespace_id  BIGINT REFERENCES namespaces(id) ON DELETE CASCADE,
+  external_ref  TEXT,
+  display_name  TEXT,
+  locale        TEXT,
+  timezone      TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(namespace_id, external_ref)
+);
+
+CREATE TABLE sessions (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  started_at    TIMESTAMPTZ DEFAULT now(),
+  ended_at      TIMESTAMPTZ,
+  purpose       TEXT
+);
+
+CREATE TABLE interactions (
+  id            BIGSERIAL PRIMARY KEY,
+  session_id    BIGINT REFERENCES sessions(id) ON DELETE CASCADE,
+  role          TEXT CHECK (role IN ('user','assistant','system','tool')),
+  content       TEXT NOT NULL,
+  tokens_in     INT,
+  tokens_out    INT,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  metadata      JSONB
+);
+CREATE INDEX ON interactions USING GIN (to_tsvector('english', content));
+```
+
+---
+
+## 4. Memory Items + Voice Recognition
+```sql
+CREATE TYPE memory_kind AS ENUM ('episodic','semantic');
+
+CREATE TABLE memory_items (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  kind          memory_kind NOT NULL,
+  title         TEXT,
+  body          TEXT NOT NULL,
+  source        TEXT,
+  source_ref    TEXT,
+  salience      REAL DEFAULT 0.5,
+  confidence    REAL DEFAULT 0.7,
+  recency_at    TIMESTAMPTZ DEFAULT now(),
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  expires_at    TIMESTAMPTZ,
+  metadata      JSONB,
+
+  -- Voice fields
+  audio_format  TEXT,
+  sample_rate   INTEGER,
+  duration_ms   INTEGER,
+  language      TEXT,
+  transcription TEXT,
+  stt_confidence REAL
+);
+
+CREATE TABLE memory_embeddings (
+  id            BIGSERIAL PRIMARY KEY,
+  memory_id     BIGINT REFERENCES memory_items(id) ON DELETE CASCADE,
+  model         TEXT NOT NULL,
+  embedding     VECTOR(1536) NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX memory_embeddings_ivfflat ON memory_embeddings USING ivfflat (embedding vector_l2_ops);
+CREATE INDEX memory_embeddings_hnsw ON memory_embeddings USING hnsw (embedding vector_l2_ops);
+```
+
+---
+
+## 5. Entities & Properties
+```sql
+CREATE TYPE entity_kind AS ENUM ('person','organization','project','tool','other');
+
+CREATE TABLE entities (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  kind          entity_kind NOT NULL,
+  name          TEXT NOT NULL,
+  description   TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  updated_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX ON entities(user_id, kind);
+
+CREATE TABLE entity_props (
+  id            BIGSERIAL PRIMARY KEY,
+  entity_id     BIGINT REFERENCES entities(id) ON DELETE CASCADE,
+  key           TEXT NOT NULL,
+  value_text    TEXT,
+  value_json    JSONB,
+  last_seen_at  TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(entity_id, key)
+);
+
+CREATE TABLE entity_links (
+  id            BIGSERIAL PRIMARY KEY,
+  from_entity   BIGINT REFERENCES entities(id) ON DELETE CASCADE,
+  to_entity     BIGINT REFERENCES entities(id) ON DELETE CASCADE,
+  relation      TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+```
+
+---
+
+## 6. Documents & Chunks
+```sql
+CREATE TABLE documents (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  title         TEXT,
+  source        TEXT,
+  mime_type     TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  metadata      JSONB
+);
+
+CREATE TABLE doc_chunks (
+  id            BIGSERIAL PRIMARY KEY,
+  document_id   BIGINT REFERENCES documents(id) ON DELETE CASCADE,
+  chunk_index   INT NOT NULL,
+  content       TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(document_id, chunk_index)
+);
+
+CREATE TABLE doc_chunk_embeddings (
+  id            BIGSERIAL PRIMARY KEY,
+  chunk_id      BIGINT REFERENCES doc_chunks(id) ON DELETE CASCADE,
+  model         TEXT NOT NULL,
+  embedding     VECTOR(1536) NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX doc_chunk_embeddings_ivf ON doc_chunk_embeddings USING ivfflat (embedding vector_l2_ops);
+```
+
+---
+
+## 7. Tool Invocations
+```sql
+CREATE TABLE tool_invocations (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  tool_name     TEXT NOT NULL,
+  input_json    JSONB,
+  output_json   JSONB,
+  status        TEXT,
+  latency_ms    INT,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+```
+
+---
+
+## 8. Tags
+```sql
+CREATE TABLE tags (
+  id            BIGSERIAL PRIMARY KEY,
+  namespace_id  BIGINT REFERENCES namespaces(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  UNIQUE(namespace_id, name)
+);
+
+CREATE TABLE memory_tags (
+  memory_id     BIGINT REFERENCES memory_items(id) ON DELETE CASCADE,
+  tag_id        BIGINT REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (memory_id, tag_id)
+);
+
+CREATE TABLE entity_tags (
+  entity_id     BIGINT REFERENCES entities(id) ON DELETE CASCADE,
+  tag_id        BIGINT REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (entity_id, tag_id)
+);
+
+CREATE TABLE doc_tags (
+  document_id   BIGINT REFERENCES documents(id) ON DELETE CASCADE,
+  tag_id        BIGINT REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (document_id, tag_id)
+);
+```
+
+---
+
+## 9. Privacy / Consent / Redactions
+```sql
+CREATE TABLE privacy_consents (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  scope         TEXT NOT NULL,
+  granted       BOOLEAN NOT NULL DEFAULT true,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  expires_at    TIMESTAMPTZ
+);
+
+CREATE TABLE redactions (
+  id            BIGSERIAL PRIMARY KEY,
+  target_table  TEXT NOT NULL,
+  target_id     BIGINT NOT NULL,
+  field         TEXT,
+  reason        TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+```
+
+---
+
+## 10. Example Insert Queries
+```sql
+-- Memory item with voice data
+INSERT INTO memory_items (user_id, kind, title, body, source, source_ref, salience, confidence, audio_format, sample_rate, duration_ms, language, transcription, stt_confidence)
+VALUES (42, 'semantic', 'User said hello', 'User greeted Max in the morning', 'voice', 'interaction:123', 0.9, 0.95, 'wav', 16000, 3000, 'en', 'Hello Max', 0.98)
+RETURNING id;
+
+-- Embedding for memory item
+INSERT INTO memory_embeddings (memory_id, model, embedding) VALUES (1, 'bge-m3', ARRAY[0.1,0.2,...]);
+```
+
+---
+
+## 11. Hybrid Retrieval Query
+```sql
+WITH semantic AS (
+  SELECT mi.id, mi.title, mi.body, 1.0 / (1.0 + (me.embedding <-> $query_vec)) AS sim
+  FROM memory_items mi
+  JOIN memory_embeddings me ON me.memory_id = mi.id
+  WHERE mi.user_id = $user_id
+  ORDER BY me.embedding <-> $query_vec
+  LIMIT 50
+),
+keyword AS (
+  SELECT id, title, body, ts_rank_cd(to_tsvector('english', body), plainto_tsquery($q)) AS rank
+  FROM memory_items
+  WHERE user_id = $user_id AND to_tsvector('english', body) @@ plainto_tsquery($q)
+  ORDER BY rank DESC
+  LIMIT 50
+)
+SELECT * FROM (
+  SELECT id, title, body, sim AS score FROM semantic
+  UNION ALL
+  SELECT id, title, body, rank AS score FROM keyword
+) u
+ORDER BY score DESC
+LIMIT $k;
+```
+
